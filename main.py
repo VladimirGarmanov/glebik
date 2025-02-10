@@ -440,10 +440,10 @@ async def get_weather(place: str) -> str:
             lon = location["longitude"]
             city_name = location.get("name", place)
 
-        # Получаем текущую погоду по координатам
+        # Получаем текущую погоду и влажность по координатам
         weather_url = (
             f"https://api.open-meteo.com/v1/forecast?"
-            f"latitude={lat}&longitude={lon}&current_weather=true&timezone=Europe/Moscow"
+            f"latitude={lat}&longitude={lon}&current_weather=true&hourly=relativehumidity_2m&timezone=Europe/Moscow"
         )
         async with session.get(weather_url, ssl=False) as weather_response:
             if weather_response.status != 200:
@@ -454,12 +454,29 @@ async def get_weather(place: str) -> str:
                 return f"Нет данных о текущей погоде для {city_name}."
             temperature = current_weather.get("temperature")
             windspeed = current_weather.get("windspeed")
+            winddirection = current_weather.get("winddirection")
+            observation_time = current_weather.get("time")
             weathercode = current_weather.get("weathercode")
             description = weather_codes.get(weathercode, f"Код погоды: {weathercode}")
+
+            # Извлекаем данные о влажности из hourly
+            humidity = None
+            hourly = weather_data.get("hourly")
+            if hourly and "time" in hourly and "relativehumidity_2m" in hourly:
+                times = hourly["time"]
+                humidity_values = hourly["relativehumidity_2m"]
+                if observation_time in times:
+                    index = times.index(observation_time)
+                    humidity = humidity_values[index]
+
+            humidity_str = f"{humidity}%" if humidity is not None else "нет данных"
+
             return (
-                f"Погода в {city_name}:\n"
+                f"Погода в {city_name} (на {observation_time}):\n"
                 f"Температура: {temperature}°C\n"
                 f"Скорость ветра: {windspeed} км/ч\n"
+                f"Направление ветра: {winddirection}°\n"
+                f"Влажность: {humidity_str}\n"
                 f"Состояние: {description}"
             )
 
