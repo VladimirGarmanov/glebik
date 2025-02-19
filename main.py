@@ -655,18 +655,12 @@ assistant_cities = [
     "Южно-Сахалинск",
     "Юрга",
     "Ялта",
-    "Ясный"
+    "Ясный",
+    "Можайск"
 ]
 
 # Объединяем оба списка, предварительно очистив названия в available_cities
-combined_set = set(cleaned_cities)
-for city in assistant_cities:
-    combined_set.add(city)
 
-combined_cities = sorted(list(combined_set))
-
-print(f"Всего уникальных городов: {len(combined_cities)}")
-print(combined_cities)
 
 # Словарь для сопоставления кодов погоды Open-Meteo с описаниями
 weather_codes = {
@@ -786,7 +780,7 @@ async def place_command(message: types.Message):
     if args:
         new_place = args.strip()
         # Проверяем, входит ли введённый город в список доступных (без учёта регистра)
-        if new_place.lower() not in [city.lower() for city in combined_cities]:
+        if new_place.lower() not in [city.lower() for city in assistant_cities]:
             await message.reply(
                 "Извините, данный город не доступен. Пожалуйста, выберите город из списка:\n" +
                 "\n".join(available_cities)
