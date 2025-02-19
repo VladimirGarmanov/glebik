@@ -485,6 +485,22 @@ async def broadcast_weather():
                 logging.error(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
 
 
+# Обработчик команды /weather для получения текущей погоды
+@dp.message_handler(commands=["weather"])
+async def weather_command(message: types.Message):
+    user_id = message.from_user.id
+    # Получаем текущий город пользователя
+    cursor.execute("SELECT place FROM users WHERE id = ?", (user_id,))
+    result = cursor.fetchone()
+
+    if result is None:
+        await message.reply("Вы не зарегистрированы. Пожалуйста, используйте команду /start для регистрации.")
+        return
+
+    place = result[0]
+    weather_info = await get_weather(place)
+    await message.reply(weather_info)
+
 # Функция, запускаемая при старте бота, для инициации фоновой задачи
 async def on_startup(dp):
     asyncio.create_task(broadcast_weather())
