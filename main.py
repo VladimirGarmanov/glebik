@@ -3,6 +3,7 @@ import logging
 import asyncio
 import sqlite3
 import aiohttp
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, types
@@ -34,10 +35,6 @@ cursor.execute("""
 conn.commit()
 
 # Список доступных городов (можно расширять по необходимости)
-import re
-
-# Исходный список городов с возможными цифровыми суффиксами
-
 assistant_cities = [
     "Москва",
     "Санкт-Петербург",
@@ -294,18 +291,13 @@ assistant_cities = [
     "Ясный",
     "Можайск"
 ]
+
 # Функция для очистки названия города (удаляет пробелы и цифры в конце)
 def clean_city(city):
     return re.sub(r'\s*\d+$', '', city)
 
-# Очищаем список available_cities
+# Очищаем список доступных городов
 cleaned_cities = [clean_city(city) for city in assistant_cities]
-
-# Дополнительный список городов (из моего ранее составленного списка), где все наименования "нормальные"
-
-
-# Объединяем оба списка, предварительно очистив названия в available_cities
-
 
 # Словарь для сопоставления кодов погоды Open-Meteo с описаниями
 weather_codes = {
@@ -339,6 +331,10 @@ weather_codes = {
     99: "Гроза с сильным градом",
 }
 
+# Глобальный словарь для отслеживания статуса оповещений по городам (ключ: город, значение: True если оповещение отправлено)
+alert_status = {}
+# Переменная для отслеживания даты оповещений
+alert_date = None
 
 # Асинхронная функция для получения погоды через Open-Meteo API с отключённой проверкой сертификата
 async def get_weather(place: str) -> str:
@@ -396,11 +392,78 @@ async def get_weather(place: str) -> str:
                 f"Состояние: {description}"
             )
 
+# Асинхронная функция для получения только скорости ветра для указанного места
+async def get_wind_speed(place: str) -> float:
+    async with aiohttp.ClientSession() as session:
+        geocode_url = f"https://geocoding-api.open-meteo.com/v1/search?name={place}&count=1&language=ru&format=json"
+        async with session.get(geocode_url, ssl=False) as geo_response:
+            if geo_response.status != 200:
+                return None
+            geo_data = await geo_response.json()
+            if "results" not in geo_data or not geo_data["results"]:
+                return None
+            location = geo_data["results"][0]
+            lat = location["latitude"]
+            lon = location["longitude"]
+
+        weather_url = (
+            f"https://api.open-meteo.com/v1/forecast?"
+            f"latitude={lat}&longitude={lon}&current_weather=true&timezone=Europe/Moscow"
+        )
+        async with session.get(weather_url, ssl=False) as weather_response:
+            if weather_response.status != 200:
+                return None
+            weather_data = await weather_response.json()
+            current_weather = weather_data.get("current_weather")
+            if not current_weather:
+                return None
+            return current_weather.get("windspeed")
+
+# Асинхронная функция для проверки условий и отправки оповещений каждые 5 минут с 9:00 до 18:00 по МСК
+async def check_alerts():
+    global alert_date, alert_status
+    while True:
+        now = datetime.now(ZoneInfo("Europe/Moscow"))
+        current_date = now.date()
+        # Сброс статуса оповещений при смене дня
+        if alert_date is None or alert_date != current_date:
+            alert_status.clear()
+            alert_date = current_date
+
+        # Проверяем, что текущее время в пределах 9:00 - 18:00 МСК
+        if 9 <= now.hour < 18:
+            # Получаем список пользователей из базы
+            cursor.execute("SELECT id, place FROM users")
+            users = cursor.fetchall()
+            # Группируем пользователей по городу
+            city_users = {}
+            for user_id, place in users:
+                city = place.strip()
+                if city not in city_users:
+                    city_users[city] = []
+                city_users[city].append(user_id)
+            # Проверяем погодные условия для каждого города
+            for city, user_ids in city_users.items():
+                # Если для города уже отправлено оповещение сегодня, пропускаем его
+                if alert_status.get(city, False):
+                    continue
+                windspeed = await get_wind_speed(city)
+                # Проверяем: если скорость ветра больше 10 м/с (10 м/с = 36 км/ч)
+                if windspeed is not None and windspeed > 36:
+                    for user_id in user_ids:
+                        try:
+                            await bot.send_message(
+                                user_id,
+                                f"Срочное сообщение: в городе {city} скорость ветра {windspeed} км/ч. ЧП, оставайтесь дома!"
+                            )
+                        except Exception as e:
+                            logging.error(f"Ошибка отправки сообщения пользователю {user_id}: {e}")
+                    alert_status[city] = True
+        await asyncio.sleep(300)  # ожидание 5 минут
 
 # Класс состояний для изменения местности через FSM
 class PlaceState(StatesGroup):
     waiting_for_new_place = State()
-
 
 # Обработчик команды /start для регистрации пользователя
 @dp.message_handler(commands=["start"])
@@ -409,13 +472,12 @@ async def start_command(message: types.Message):
     cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
     result = cursor.fetchone()
     if result is None:
-        # По умолчанию регистрируем с городом "Москва"
+        # По умолчанию регистрируем с городом "Можайск"
         cursor.execute("INSERT INTO users (id, place) VALUES (?, ?)", (user_id, "Можайск"))
         conn.commit()
         await message.reply("Вы зарегистрированы! Местность установлена по умолчанию: Можайск")
     else:
         await message.reply("Вы уже зарегистрированы.")
-
 
 # Обработчик команды /place для обновления местности с выводом списка доступных городов
 @dp.message_handler(commands=["place"])
@@ -435,11 +497,8 @@ async def place_command(message: types.Message):
         conn.commit()
         await message.reply(f"Ваша местность обновлена на: {new_place}")
     else:
-        # Если аргумент не передан, выводим список доступных городов
-        cities_list = "\n".join(assistant_cities)
         await message.reply("Введите в формате: Москва")
         await PlaceState.waiting_for_new_place.set()
-
 
 # Обработчик для ввода новой местности, когда бот ждёт выбор пользователя
 @dp.message_handler(state=PlaceState.waiting_for_new_place)
@@ -457,7 +516,6 @@ async def process_new_place(message: types.Message, state: FSMContext):
     await message.reply(f"Ваша местность обновлена на: {new_place}")
     await state.finish()
 
-
 # Функция для вычисления времени до следующего 9:00 по Москве
 def seconds_until_target():
     now = datetime.now(ZoneInfo("Europe/Moscow"))
@@ -466,15 +524,12 @@ def seconds_until_target():
         target += timedelta(days=1)
     return (target - now).total_seconds()
 
-
 # Фоновая задача для рассылки погоды каждому пользователю каждый день в 9:00 по Москве
 async def broadcast_weather():
     while True:
-        # Вычисляем, сколько секунд осталось до следующего 9:00 по Москве
         wait_seconds = seconds_until_target()
         logging.info(f"Ожидание {wait_seconds} секунд до следующего запуска рассылки в 9:00 по Москве.")
         await asyncio.sleep(wait_seconds)
-        # Получаем список пользователей из базы
         cursor.execute("SELECT id, place FROM users")
         users = cursor.fetchall()
         for user_id, place in users:
@@ -484,27 +539,10 @@ async def broadcast_weather():
             except Exception as e:
                 logging.error(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
 
-
-# Обработчик команды /weather для получения текущей погоды
-@dp.message_handler(commands=["weather"])
-async def weather_command(message: types.Message):
-    user_id = message.from_user.id
-    # Получаем текущий город пользователя
-    cursor.execute("SELECT place FROM users WHERE id = ?", (user_id,))
-    result = cursor.fetchone()
-
-    if result is None:
-        await message.reply("Вы не зарегистрированы. Пожалуйста, используйте команду /start для регистрации.")
-        return
-
-    place = result[0]
-    weather_info = await get_weather(place)
-    await message.reply(weather_info)
-
-# Функция, запускаемая при старте бота, для инициации фоновой задачи
+# Функция, запускаемая при старте бота, для инициации фоновых задач
 async def on_startup(dp):
     asyncio.create_task(broadcast_weather())
-
+    asyncio.create_task(check_alerts())
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
