@@ -479,6 +479,19 @@ async def start_command(message: types.Message):
     else:
         await message.reply("Вы уже зарегистрированы.")
 
+@dp.message_handler(commands=["weather"])
+async def weather_command(message: types.Message):
+    user_id = message.from_user.id
+    # Получаем из базы данные о местности пользователя
+    cursor.execute("SELECT place FROM users WHERE id = ?", (user_id,))
+    result = cursor.fetchone()
+    if result is None:
+        await message.reply("Вы не зарегистрированы. Пожалуйста, используйте команду /start для регистрации.")
+        return
+    place = result[0]
+    # Получаем информацию о погоде для указанного места
+    weather_info = await get_weather(place)
+    await message.reply(weather_info)
 # Обработчик команды /place для обновления местности с выводом списка доступных городов
 @dp.message_handler(commands=["place"])
 async def place_command(message: types.Message):
@@ -486,7 +499,7 @@ async def place_command(message: types.Message):
     args = message.get_args()  # Получаем аргументы после команды
     if args:
         new_place = args.strip()
-        # Проверяем, входит ли введённый город в список доступных (без учёта регистра)
+        # Проверяем, входит ли цeый город в список доступных (без учёта регистра)
         if new_place.lower() not in [city.lower() for city in assistant_cities]:
             await message.reply(
                 "Извините, данный город не доступен. Пожалуйста, выберите город из списка:\n" +
